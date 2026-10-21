@@ -1,0 +1,93 @@
+name: 刷新 Treasure Camel 看板
+
+on:
+  schedule:
+    # GitHub 的 cron 是 best-effort，实测常晚 40 分钟~2.5 小时、高负载时整次跳过，
+    # 所以一天排 5 次而不是 1 次。时间点排在沙特日结束（UTC 21:00）之后。
+    # 下面都是 UTC：23:30 / 02:30 / 06:30 / 10:30 / 14:30
+    - cron: '30 23 * * *'
+    - cron: '30 2 * * *'
+    - cron: '30 6 * * *'
+    - cron: '30 10 * * *'
+    - cron: '30 14 * * *'
+  workflow_dispatch:        # 允许手动触发
+
+concurrency:
+  # 同组排队而不是叠加：前一次还在抓数时，下一次不要并行压后台
+  group: camel-dashboard
+  cancel-in-progress: false
+
+permissions:
+  contents: write           # 需要把 site/index.html 提交回仓库
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 语法预检
+        # 抓数要 1~2 分钟。渲染脚本的语法错如果等到那时才暴露，整轮白抓。
+        run: |
+          python3 -c "import ast; [ast.parse(open(f,encoding='utf-8').read(), f) for f in ('fetch.py','render.py','mcpq.py')]"
+
+      - name: 生成 config.env
+        env:
+          CAMEL_PASSWORD: ${{ secrets.CAMEL_PASSWORD }}
+        run: |
+          if [ -z "$CAMEL_PASSWORD" ]; then
+            echo "::error::仓库没有配 CAMEL_PASSWORD secret"
+            exit 1
+          fi
+          cp config.ci.env config.env
+          # 密码只经环境变量进文件，不出现在日志里
+          printf 'CAMEL_PASSWORD=%s\n' "$CAMEL_PASSWORD" >> config.env
+          chmod 600 config.env
+
+      - name: 抓数
+        id: fetch
+        # 后台停机维护（503）时 fetch.py 会自行退避重试约 15 分钟，
+        # 仍不恢复就退出非 0 —— 这里不让它中断整个 job，交给下面的 guard 决定。
+        continue-on-error: true
+        run: python3 fetch.py
+
+      - name: Guard · 数据残缺就不发布
+        id: guard
+        run: |
+          if [ ! -f data.json ]; then
+            echo "没有 data.json（抓数失败）→ 保留上一版页面"
+            echo "ok=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          n=$(python3 -c "import json;d=json.load(open('data.json'));print(sum(1 for k in ('summary','recent','lastday','glory','retention_daily','hit_daily') if d.get(k)))")
+          echo "关键数据块 $n/6"
+          if [ "$n" -lt 4 ]; then
+            echo "数据残缺（$n/6）→ 保留上一版页面"
+            echo "ok=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "ok=true" >> "$GITHUB_OUTPUT"
+
+      - name: 渲染
+        if: steps.guard.outputs.ok == 'true'
+        run: python3 render.py
+
+      - name: 提交并推送
+        if: steps.guard.outputs.ok == 'true'
+        run: |
+          rm -f config.env          # 保险：绝不把凭据提交进仓库
+          if git diff --quiet -- site/; then
+            echo "页面没有变化，跳过提交"
+            exit 0
+          fi
+          git config user.name  "camel-dashboard-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add site/
+          git commit -m "刷新看板 $(date -u '+%Y-%m-%d %H:%M UTC')"
+          git push
+
+      - name: 本次未发布时给出结论
+        if: steps.guard.outputs.ok != 'true'
+        run: |
+          echo "::warning::本次未更新页面，线上保留上一版（数据停在上一次成功的日期）。"
+          echo "常见原因：后台停机维护（整站 503）、密码失效、Redshift 不可用。"
