@@ -1,0 +1,12 @@
+# ❗凭据，绝不提交
+config.env
+
+# 中间产物
+data.json
+data.json.prev
+run.log
+__pycache__/
+.DS_Store
+
+# 本地渲染的产物（CI 产出的在 site/，那个要提交）
+/../04-Treasure-Camel.html
