@@ -6,7 +6,13 @@
 import json, os, sys, time, urllib.request, urllib.error, datetime as dt
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-HOST = "https://server-game.letskix.com"
+# 2026-10-22 起改用 -test 域名。
+# ⚠️ 别被名字骗了：`-test` 不是测试服，和 server-game.letskix.com 是**同一套后端**
+#    （09-12~10-21 窗口活跃 490 / spin 377,419，与旧域名数据接得上）。
+#    README/HANDOFF 里原先写的「-test 是测试服、接口返回 401」是错的，
+#    那次 401 是会话问题不是服务器问题。
+# ⚠️ Cookie 按域名隔离，换域名必须重新登录。
+HOST = os.environ.get("CAMEL_HOST") or "https://server-game-test.letskix.com"
 BASE = "/app/41011/v1/admin/analytics"
 
 
@@ -52,14 +58,18 @@ def http_json(req, what, tries=3):
             time.sleep(3)
 
 
-def login(password):
-    """用管理员密码换一张会话 Cookie。
+def login(password, username="admin"):
+    """用管理员账号密码换一张会话 Cookie。
 
-    后台是 REST 风格，会话即资源：POST /v1/admin/session {"password": ...}
+    后台是 REST 风格，会话即资源：
+        POST /v1/admin/session  {"username": "admin", "password": "..."}
     成功返回 204 + Set-Cookie（treasure_camel_admin，Max-Age=86400 即 24 小时）。
-    注意只认 POST，用 GET 试会返回 404 —— 早期因此误判成「没有登录接口」。
+
+    ⚠️ 只认 POST，用 GET 试会返回 404 —— 早期因此误判成「后台没有登录接口」。
+    ⚠️ 2026-10-22 接口增加了 username 字段（前端输入框默认值就是 admin）；
+       在此之前只要 password。用 CAMEL_USERNAME 可覆盖。
     """
-    body = json.dumps({"password": password}).encode()
+    body = json.dumps({"username": username, "password": password}).encode()
     req = urllib.request.Request(
         f"{HOST}/app/41011/v1/admin/session", data=body, method="POST",
         headers={"Content-Type": "application/json",
@@ -101,14 +111,15 @@ def load_config():
             k, v = line.split("=", 1)
             cfg[k.strip()] = v.strip()
     # 环境变量优先，便于 CI 用 Secrets 注入而不落盘
-    for k in ("CAMEL_PASSWORD", "CAMEL_COOKIE"):
+    for k in ("CAMEL_USERNAME", "CAMEL_PASSWORD", "CAMEL_COOKIE"):
         if os.environ.get(k):
             cfg[k] = os.environ[k]
+    cfg.setdefault("CAMEL_USERNAME", "admin")
     # 有密码就自动换票（24 小时有效，每次跑都重新换，不用管过期）；
     # 没密码才退回手填 Cookie。
     if cfg.get("CAMEL_PASSWORD"):
-        print("· 用密码登录后台换会话")
-        cfg["CAMEL_COOKIE"] = login(cfg["CAMEL_PASSWORD"])
+        print(f"· 用 {cfg['CAMEL_USERNAME']} 登录后台换会话（{HOST}）")
+        cfg["CAMEL_COOKIE"] = login(cfg["CAMEL_PASSWORD"], cfg["CAMEL_USERNAME"])
     elif not cfg.get("CAMEL_COOKIE"):
         sys.exit("config.env 里 CAMEL_PASSWORD 和 CAMEL_COOKIE 都是空的，"
                  "填 CAMEL_PASSWORD 即可自动登录（推荐）。")
@@ -200,6 +211,9 @@ def main():
 
     print(f"· 最后一个完整日 summary（{B}，用于顶部 KPI）")
     out["lastday"] = api(cfg, "summary", **{"from": B, "to": B})
+
+    print(f"· 跨游戏对比同窗 summary（{CG} ~ {B}）")
+    out["crosswin"] = api(cfg, "summary", **{"from": CG, "to": B})
 
     print("· 逐日留存", end="", flush=True)
     out["retention_daily"] = []

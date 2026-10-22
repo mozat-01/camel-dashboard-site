@@ -36,6 +36,8 @@ jobs:
       - name: 生成 config.env
         env:
           CAMEL_PASSWORD: ${{ secrets.CAMEL_PASSWORD }}
+          # 用户名非机密，默认 admin；需要改时在仓库 Variables 里设 CAMEL_USERNAME
+          CAMEL_USERNAME: ${{ vars.CAMEL_USERNAME || 'admin' }}
         run: |
           if [ -z "$CAMEL_PASSWORD" ]; then
             echo "::error::仓库没有配 CAMEL_PASSWORD secret"
@@ -44,6 +46,7 @@ jobs:
           cp config.ci.env config.env
           # 密码只经环境变量进文件，不出现在日志里
           printf 'CAMEL_PASSWORD=%s\n' "$CAMEL_PASSWORD" >> config.env
+          printf 'CAMEL_USERNAME=%s\n' "$CAMEL_USERNAME" >> config.env
           chmod 600 config.env
 
       - name: 抓数

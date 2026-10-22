@@ -27,7 +27,8 @@ LABELS = {"account_opening": "开户欢迎奖励", "emergency_recovery_supply": 
           "coin_purchase": "兑换到账", "daily_recovery_supply": "每日补给",
           "daily_login": "每日登录", "caravan_daily_order": "每日任务",
           "admin_coin_purchase_compensation": "后台补币", "support_goodwill": "客服补偿",
-          "weekly_bridge_reward": "周榜奖励"}
+          # 这是 Credits，与周榜「结算金币」(Coins) 不是同一种币，命名要能区分
+          "weekly_bridge_reward": "周榜过渡奖励（Credits）"}
 PAID = {"coin_purchase"}
 
 # ── Credits 来源（最近 N 天）──────────────────────────────────────
@@ -68,12 +69,20 @@ hrow += (f'<tr class="hi"><td class="mono"><b>合计</b></td><td class="num mono
 
 # ── 逐日规模表 ───────────────────────────────────────────────────
 xd = {r["d"][:10]: r for r in D["exchange_daily"]}
+# ⑥ 活跃统一取逐日 summary（retention_daily.active），不再用聚合调用 S["daily"]。
+# 原因：两批调用之间后台会回补历史数据，同一天在两处会对不上（实测 09-16 23 vs 22）。
+# 留存表本来就用逐日值，这里跟它对齐，全表口径一致。
+# 代价：规模表的活跃依赖那约 40 次单日调用；取不到时回退聚合值，至少不空表。
+_dact = {r["date"][:10]: r.get("active") for r in (D.get("retention_daily") or [])}
 daily = [d for d in S["daily"] if d["activePlayers"] > 0]
 MXS = max(d["spins"] for d in daily) or 1
 MXC = max([int(v["c"]) for v in xd.values()] or [1]) or 1
 rows = []
 for d in daily:
-    day = d["date"][:10]; ap = d["activePlayers"]; sp = d["spins"]
+    day = d["date"][:10]
+    # 逐日值优先（与留存表同源）；缺失才回退聚合值
+    ap = _dact.get(day) or d["activePlayers"]
+    sp = d["spins"]
     r = xd.get(day, {}); xp = int(r.get("ppl", 0)); xc = int(r.get("c", 0))
     dr = int(d["awardedCoins"]) / int(d["wageredCoins"]) * 100 if int(d["wageredCoins"]) else 0
     rows.append(f'<tr><td class="mono">{day[5:]}</td><td class="num mono">{ap}</td>'
@@ -117,7 +126,9 @@ r7_day, r7_val = latest_mature("ar", 2)
 r1_day, r1_val = latest_mature("ar", 0)
 
 # ── 漏斗（最近 N 天）─────────────────────────────────────────────
-F = [("启动游戏", rac["startedPlayers"]), ("领取欢迎奖励", rac["starterGiftCollectedPlayers"]),
+F = [("启动游戏", rac["startedPlayers"]),
+     ("欢迎币到账", rac.get("starterGiftCreditedPlayers") or rac["startedPlayers"]),
+     ("确认弹窗", rac.get("starterGiftAcknowledgedPlayers") or rac["starterGiftCollectedPlayers"]),
      ("开始游戏（≥1 Spin）", rac["spin1Players"]), ("持续玩（≥5 Spin）", rac["spin5Players"]),
      ("≥10 Spin", rac["spin10Players"]), ("深玩（≥25 Spin）", rac["spin25Players"])]
 den = F[0][1] or 1
@@ -126,14 +137,14 @@ for i, (lab, v) in enumerate(F):
     frows.append(f'<tr><td>{i+1:02d}　{lab}</td><td class="num mono">{v}</td>'
                  f'<td>{bar(v/den*100)}</td>'
                  f'<td class="num">{"分母" if i==0 else pf(v,F[i-1][1])}</td></tr>')
-frows.append('<tr class="sub2"><td colspan="4">▼ 兑换路径</td></tr>')
+frows.append('<tr class="sub2"><td colspan="4">▼ 兑换路径（事件口径＝窗口内全体玩家，与上段的 cohort 不是同一人群，不可逐环相除）</td></tr>')
 for i, k in enumerate(["insufficient_balance_shown", "coin_store_viewed", "coin_pack_clicked"]):
     lab = {"insufficient_balance_shown": "Credits 不足（撞墙）", "coin_store_viewed": "进入商店",
            "coin_pack_clicked": "点击 coin pack"}[k]
     frows.append(f'<tr><td>{len(F)+i+1:02d}　{lab}</td>'
                  f'<td class="num mono">{RE(k)} <span class="note">/ {n(RE(k,"events"))} 次</span></td>'
                  f'<td>{bar(RE(k)/den*100,"var(--m2)")}</td><td class="num">—</td></tr>')
-frows.append(f'<tr class="hi"><td><b>10　完成兑换（coins→credits）</b></td>'
+frows.append(f'<tr class="hi"><td><b>{len(F)+4:02d}　完成兑换（coins→credits）</b></td>'
              f'<td class="num mono"><b>{rex["successful"]} 笔</b> <span class="note">/ {xr["ppl"]} 人</span></td>'
              f'<td>{bar(int(xr["ppl"])/den*100,"var(--m2)")}</td>'
              f'<td class="num mono">扣 {n(rex["loopsCoinsDeducted"])}</td></tr>')
@@ -165,7 +176,7 @@ for r in D["retention_daily"]:
         continue
     rtrows.append(f'<tr><td class="mono">{r["date"][5:]}</td><td class="num mono">{r["active"]}</td>'
                   + "".join(cell(x) for x in r["ar"])
-                  + f'<td class="num mono" style="color:var(--ink-4)">{r["co"][0]["den"]}</td>'
+                  + f'<td class="num mono" style="color:var(--ink-4)">{r["co"][0]["den"] or "—"}</td>'
                   + "".join(cell(x) for x in r["co"]) + '</tr>')
 
 # ── 逐日留存折线图 ───────────────────────────────────────────────
@@ -238,8 +249,9 @@ for r in D["crossgame"]:
         continue
     f3 = lambda a, b: int(r[a]) / int(r[b]) * 100 if int(r[b]) else 0
     cg.append((r["g"], int(r["uu"]), f3("num1", "den1"), f3("num3", "den3"), f3("num7", "den7")))
-car = S["activeRetention"]["retention"]
-cg.append(("★ Treasure Camel", gp["activePlayers"],
+CW = D.get("crosswin") or S
+car = CW["activeRetention"]["retention"]
+cg.append(("★ Treasure Camel", CW["gameplay"]["activePlayers"],
            float(car[0]["rate"])*100, float(car[1]["rate"])*100, float(car[2]["rate"])*100))
 cg.sort(key=lambda x: -x[2])
 mx1 = cg[0][2] if cg else 1
@@ -313,14 +325,14 @@ HTML = f'''<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8"><meta name
   <div class="kpi"><div class="k">活跃日留存 D7</div><div class="v">{f"{r7_val:.1f}%" if r7_val is not None else "—"}</div><div class="s">{r7_day[5:] if r7_day else "—"} 开盘 · D1 {f"{r1_val:.1f}%" if r1_val is not None else "—"}（{r1_day[5:] if r1_day else "—"}）</div></div>
   <div class="kpi"><div class="k">命中率</div><div class="v">{pf(ld_h["hit"],ld_h["spins"],2) if ld_h else "—"}</div><div class="s">payout &gt; 0 · 样本 {n(ld_h["spins"]) if ld_h else "—"} spin</div></div>
   <div class="kpi"><div class="k">兑换（coins→credits）</div><div class="v">{ld_ex.get("successful",0)}<span style="font-size:15px;color:var(--ink-4)"> 笔</span></div><div class="s">扣 {n(ld_x.get("c",0))} Coins · {ld_x.get("ppl",0)} 人</div></div>
-  <div class="kpi"><div class="k">credits 免费占比</div><div class="v">{ld_free*100:.1f}%</div><div class="s">当日发放 {n(ld_grant)} · Coins 换 {pf(ld_paid,ld_grant)}</div></div>
+  <div class="kpi"><div class="k">credits 发放结构 · 免费占比</div><div class="v">{ld_free*100:.1f}%</div><div class="s">当日发放 {n(ld_grant)} · Coins 换 {pf(ld_paid,ld_grant)}</div></div>
 </div>
 </div></header>
 <div class="wrap">
 
 <section><h2><span class="chap">Scale</span>规模</h2>
 <div class="card"><div class="cb">
-<table style="min-width:880px"><thead><tr><th>沙特日</th><th class="num">活跃</th><th class="num">新玩家</th><th class="num">Spin</th><th style="width:84px"></th><th class="num">人均</th><th class="num">兑换<br>人数</th><th class="num">兑换<br>Coins</th><th style="width:68px"></th><th class="num">RTP</th><th class="num">净消耗<span class="note">（百万）</span></th></tr></thead>
+<table style="min-width:880px"><thead><tr><th>沙特日</th><th class="num">活跃</th><th class="num">新玩家</th><th class="num">Spin</th><th style="width:84px"></th><th class="num">人均</th><th class="num">兑换人数<span class="note"><br>扣款日</span></th><th class="num">兑换 Coins<span class="note"><br>扣款日</span></th><th style="width:68px"></th><th class="num">RTP</th><th class="num">净消耗<span class="note">（百万）</span></th></tr></thead>
 <tbody>{"".join(rows)}</tbody></table>
 </div></div></section>
 
@@ -329,7 +341,7 @@ HTML = f'''<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8"><meta name
 <table><thead><tr><th style="width:38%">环节</th><th class="num">人数</th><th style="width:150px"></th><th class="num">占上环</th></tr></thead>
 <tbody>{"".join(frows)}</tbody></table>
 </div></div>
-<div class="card" style="margin-top:12px"><div class="ch"><div class="t">Credits 来源</div><span class="tag">{FW}</span></div><div class="cb">
+<div class="card" style="margin-top:12px"><div class="ch"><div class="t">Credits 发放结构</div><span class="tag">{FW}</span></div><div class="cb">
 <table><thead><tr><th style="width:34%">来源</th><th class="num">发放量</th><th style="width:130px"></th><th class="num">占比</th><th>性质</th></tr></thead>
 <tbody>{"".join(erows)}</tbody></table>
 </div></div>
@@ -342,7 +354,7 @@ HTML = f'''<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8"><meta name
 <div class="card"><div class="ch"><div class="t">逐日留存</div><span class="tag">{W["retention_start"][5:]} 起 · 未成熟不画点</span></div><div class="cb">
 {charts}
 <details class="tbl"><summary>展开数据表</summary>
-<table style="min-width:760px"><thead><tr><th rowspan="2">沙特日</th><th class="num" rowspan="2">活跃</th><th class="num" colspan="3">活跃日留存</th><th class="num" rowspan="2">新玩家</th><th class="num" colspan="3">新玩家 cohort</th></tr>
+<table style="min-width:760px"><thead><tr><th rowspan="2">沙特日</th><th class="num" rowspan="2">活跃</th><th class="num" colspan="3">活跃日留存</th><th class="num" rowspan="2">成熟<br>分母</th><th class="num" colspan="3">新玩家 cohort</th></tr>
 <tr><th class="num">D1</th><th class="num">D3</th><th class="num">D7</th><th class="num">D1</th><th class="num">D3</th><th class="num">D7</th></tr></thead>
 <tbody>{"".join(rtrows)}</tbody></table>
 </details>
@@ -353,7 +365,7 @@ HTML = f'''<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8"><meta name
 </div></div></section>
 
 <section><h2><span class="chap">Leaderboard</span>Caravan Glory 周榜</h2>
-<div class="card"><div class="ch"><div class="t">赛期</div></div><div class="cb">
+<div class="card"><div class="ch"><div class="t">赛期</div><span class="tag warn">周榜接口为全来源，非仅 Loops</span></div><div class="cb">
 <table style="min-width:820px"><thead><tr><th>赛期</th><th class="num">参与</th><th class="num">当周活跃</th><th class="num">渗透</th><th class="num">计分事件</th><th class="num">结算奖励</th><th class="num">已领</th><th class="num">领奖率</th><th class="num">结算金币</th></tr></thead>
 <tbody>{"".join(qrows)}</tbody></table>
 </div></div>
