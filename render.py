@@ -286,6 +286,84 @@ for i, g in enumerate(D["glory"]):
                  f'<td class="num mono">{n(g["rank_total"])}</td></tr>')
 
 FW = f'{W["funnel_from"][5:]}~{W["end"][5:]}'
+
+# ── 玩家分层（users?metric=active_players 逐人明细）────────────────
+U = D.get("users") or []
+SEG_EDGES = [(0, 100, "新手 <100"), (100, 1000, "成长 100–999"), (1000, 10**18, "成熟 1000+")]
+
+
+def _seg(u):
+    sp = int(u.get("totalSpins") or 0)
+    for lo, hi, lab in SEG_EDGES:
+        if lo <= sp < hi:
+            return lab
+    return SEG_EDGES[-1][2]
+
+
+def _paid(u):
+    return int(u.get("loopsCoinsSpent") or 0) > 0
+
+
+def _is_new(u):
+    return (u.get("firstSeenAt") or "")[:10] >= W["funnel_from"]
+
+
+def _xtab(rows, groups):
+    """[(标签, 该组用户列表)] → 付费/未付费交叉表的 <tr> 串"""
+    out = []
+    for lab, g in groups:
+        pn = sum(1 for u in g if _paid(u))
+        tot = len(g)
+        hi = ' class="hi"' if tot and pn / tot >= 0.3 else ''
+        out.append(f'<tr{hi}><td>{lab}</td><td class="num mono">{pn}</td>'
+                   f'<td class="num mono">{tot-pn}</td><td class="num mono">{tot}</td>'
+                   f'<td><div class="bar"><i style="width:{(pn/tot*100) if tot else 0:.1f}%;background:var(--m1)"></i></div></td>'
+                   f'<td class="num mono">{pf(pn,tot)}</td></tr>')
+    return "".join(out)
+
+
+seg_rows = _xtab(U, [(lab, [u for u in U if _seg(u) == lab]) for _, _, lab in SEG_EDGES]
+                    + [("合计", U)]) if U else ""
+age_rows = _xtab(U, [("新玩家 <span class=\"note\">首见于本窗</span>", [u for u in U if _is_new(u)]),
+                     ("老玩家", [u for u in U if not _is_new(u)]),
+                     ("合计", U)]) if U else ""
+
+BAL_BANDS = [(0, 1, "0"), (1, 30000, "1 ~ 3 万 <span class=\"note\">不足最低注</span>"),
+             (30000, 150000, "3 万 ~ 15 万"), (150000, 1000000, "15 万 ~ 100 万"),
+             (1000000, 10**18, "100 万 +")]
+bal_rows = ""
+if U:
+    bals = sorted(int(u.get("currentBalance") or 0) for u in U)
+    mxb = max((sum(1 for v in bals if lo <= v < hi) for lo, hi, _ in BAL_BANDS), default=1) or 1
+    for lo, hi, lab in BAL_BANDS:
+        c = sum(1 for v in bals if lo <= v < hi)
+        warn = ' class="hi"' if lo == 1 else ''
+        bal_rows += (f'<tr{warn}><td>{lab}</td><td class="num mono">{c}</td>'
+                     f'<td><div class="bar"><i style="width:{c/mxb*100:.1f}%;background:var(--m2)"></i></div></td>'
+                     f'<td class="num mono">{pf(c,len(bals))}</td></tr>')
+    _q = lambda f: bals[min(len(bals)-1, int(len(bals)*f))]
+    bal_rows += (f'<tr class="sub2"><td colspan="4">▼ 分位数</td></tr>'
+                 f'<tr><td>P25 / 中位 / P75 / P90</td><td class="num mono" colspan="3">'
+                 f'{n(_q(.25))} / {n(_q(.5))} / {n(_q(.75))} / {n(_q(.9))}</td></tr>')
+
+SEG_SECTION = f"""
+<section><h2><span class="chap">Segments</span>玩家分层<span class="tag">{FW} 活跃玩家 · n={len(U)}</span></h2>
+<div class="two">
+<div class="card"><div class="ch"><div class="t">按累计 Spin 分层 × 付费</div></div><div class="cb">
+<table><thead><tr><th style="width:30%">档位</th><th class="num">付费</th><th class="num">未付费</th><th class="num">合计</th><th style="width:90px">付费率</th><th class="num"></th></tr></thead>
+<tbody>{seg_rows}</tbody></table>
+</div></div>
+<div class="card"><div class="ch"><div class="t">新 / 老玩家 × 付费</div></div><div class="cb">
+<table><thead><tr><th style="width:30%">人群</th><th class="num">付费</th><th class="num">未付费</th><th class="num">合计</th><th style="width:90px">付费率</th><th class="num"></th></tr></thead>
+<tbody>{age_rows}</tbody></table>
+</div></div>
+</div>
+<div class="card" style="margin-top:12px"><div class="ch"><div class="t">当前余额分布</div><span class="tag">currentBalance 快照</span></div><div class="cb">
+<table><thead><tr><th style="width:34%">余额区间</th><th class="num">人数</th><th style="width:150px"></th><th class="num">占比</th></tr></thead>
+<tbody>{bal_rows}</tbody></table>
+</div></div></section>
+"""
+
 TIP_JS = """<script>
 document.querySelectorAll('.chart').forEach(function(c){
   var pts=JSON.parse(c.dataset.pts), L=+c.dataset.l, pw=+c.dataset.pw, VB=760;
@@ -313,6 +391,43 @@ document.querySelectorAll('.chart').forEach(function(c){
   c.addEventListener('mouseleave',hide);
 });
 </script>"""
+# ── 变更记录（CHANGELOG.md 的表格）──────────────────────────────
+SRC_TAG = {"游戏侧": "warn", "数据观测": "", "看板": "good"}
+chg_rows = ""
+_cl = os.path.join(HERE, "CHANGELOG.md")
+if os.path.exists(_cl):
+    _txt = open(_cl, encoding="utf-8").read()
+    _a = _txt.find("<!-- CHANGELOG-TABLE-START -->")
+    _b = _txt.find("<!-- CHANGELOG-TABLE-END -->")
+    _seg = _txt[_a:_b] if _a >= 0 and _b > _a else _txt
+    for _ln in _seg.splitlines():
+        _ln = _ln.strip()
+        if not _ln.startswith("|") or set(_ln) <= set("|-: "):
+            continue
+        _c = [x.strip() for x in _ln.strip("|").split("|")]
+        if len(_c) < 3 or _c[0] in ("日期",):
+            continue
+        _d, _src, _what = _c[0], _c[1], _c[2]
+        # markdown 的 `code` → 等宽样式
+        _what = __import__("re").sub(r"`([^`]+)`",
+                                     r'<span class="mono">\1</span>', _what)
+        _t = SRC_TAG.get(_src, "")
+        _cls = f' class="tag {_t}"' if _t else ' class="tag"'
+        chg_rows += (f'<tr><td class="mono" style="white-space:nowrap">{_d}</td>'
+                     f'<td style="white-space:nowrap"><span{_cls}>{_src}</span></td>'
+                     f'<td>{_what}</td></tr>')
+
+CHG_SECTION = ("""
+<section><h2><span class="chap">Changelog</span>变更记录</h2>
+<div class="card"><div class="ch"><div class="t">时间线</div><span class="tag">手工维护 · CHANGELOG.md</span></div><div class="cb">
+<table><thead><tr><th style="width:12%">日期</th><th style="width:12%">来源</th><th>内容</th></tr></thead>
+<tbody>""" + chg_rows + """</tbody></table>
+<div class="rule"><span class="tag warn">游戏侧</span> 对方告知的发布与修复，时间为北京时间 ·
+<span class="tag">数据观测</span> 数据上看到的变化，不代表已知原因 ·
+<span class="tag good">看板</span> 本看板自身的口径或展示调整</div>
+</div></div></section>
+""") if chg_rows else ""
+
 CSS = open(os.path.join(HERE, "style.css"), encoding="utf-8").read()
 HTML = f'''<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Treasure Camel</title>
@@ -350,6 +465,7 @@ HTML = f'''<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8"><meta name
 <tbody>{hrow}</tbody></table>
 </div></div></section>
 
+{SEG_SECTION}
 <section><h2><span class="chap">Retention</span>留存</h2>
 <div class="card"><div class="ch"><div class="t">逐日留存</div><span class="tag">{W["retention_start"][5:]} 起 · 未成熟不画点</span></div><div class="cb">
 {charts}
@@ -374,6 +490,7 @@ HTML = f'''<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8"><meta name
 <tbody>{"".join(srows)}</tbody></table>
 </div></div></section>
 
+{CHG_SECTION}
 {TIP_JS}
 <footer>窗口 {W["start"]} ~ {W["end"]}（完整沙特日）· 漏斗与 Credits 来源取最近 {W["funnel_days"]} 天 · 抓取于 {D["fetched_at"]} · ⚠️ 看板会回补历史数据，当日数据不可用</footer>
 </div></body></html>'''

@@ -192,6 +192,27 @@ def redshift(sql, tries=6):
     return []
 
 
+def fetch_users(cfg, a, b, page_size=100, cap=5000):
+    """分页拉 users?metric=active_players 的逐人明细。
+
+    这是后台唯一一个给 uid 级数据的 metric（其余值返回 invalid_analytics_users_query）。
+    字段：firstSeenAt / totalSpins / paidSpins / wageredCoins / netConsumedCoins /
+          loopsCoinsSpent / currentBalance 等 —— 玩家分层与余额分布全靠它。
+    """
+    users, page = [], 1
+    while len(users) < cap:
+        j = api(cfg, "users", **{"from": a, "to": b, "metric": "active_players",
+                                 "page": page, "pageSize": page_size})
+        if not j:
+            break
+        batch = j.get("users") or []
+        users += batch
+        if not batch or len(users) >= int(j.get("total") or 0):
+            break
+        page += 1
+    return users
+
+
 def main():
     cfg = load_config()
     A, B = cfg["WINDOW_START"], cfg["WINDOW_END"]
@@ -214,6 +235,10 @@ def main():
 
     print(f"· 跨游戏对比同窗 summary（{CG} ~ {B}）")
     out["crosswin"] = api(cfg, "summary", **{"from": CG, "to": B})
+
+    print(f"· 玩家逐人明细（{RA} ~ {B}）")
+    out["users"] = fetch_users(cfg, RA, B)
+    print(f"  拿到 {len(out['users'])} 人")
 
     print("· 逐日留存", end="", flush=True)
     out["retention_daily"] = []
