@@ -192,6 +192,15 @@ def redshift(sql, tries=6):
     return []
 
 
+def num(v):
+    """后台的数值字段有时是 '123'、有时是 '32372.5'（周榜分数 2026-11-01 起带小数），
+    统一按浮点解析。直接 int('32372.5') 会 ValueError，整条抓数就挂了。"""
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def fetch_users(cfg, a, b, page_size=100, cap=5000):
     """分页拉 users?metric=active_players 的逐人明细。
 
@@ -207,7 +216,7 @@ def fetch_users(cfg, a, b, page_size=100, cap=5000):
             break
         batch = j.get("users") or []
         users += batch
-        if not batch or len(users) >= int(j.get("total") or 0):
+        if not batch or len(users) >= num(j.get("total")):
             break
         page += 1
     return users
@@ -271,18 +280,18 @@ def main():
     hits = {}
     for d in daterange(A, B):
         j = api(cfg, "spins", **{"from": d, "to": d, "limit": 100})
-        rows = [r for r in j.get("rows", []) if int(r["wager"]) > 0]
+        rows = [r for r in j.get("rows", []) if num(r["wager"]) > 0]
         if not rows:
             continue
         n = len(rows)
-        hit = [r for r in rows if int(r["payout"]) > 0]
+        hit = [r for r in rows if num(r["payout"]) > 0]
         win = [r for r in rows if r["result"] == "WIN"]
-        mult = sorted(int(r["payout"]) / int(r["wager"]) for r in hit)
+        mult = sorted(num(r["payout"]) / num(r["wager"]) for r in hit)
         hits[d] = {"spins": n, "hit": len(hit), "win": len(win),
                    "sub1": sum(1 for m in mult if m < 1),
                    "median_mult": round(mult[len(mult) // 2], 2) if mult else None,
-                   "wager": sum(int(r["wager"]) for r in rows),
-                   "payout": sum(int(r["payout"]) for r in rows)}
+                   "wager": round(sum(num(r["wager"]) for r in rows)),
+                   "payout": round(sum(num(r["payout"]) for r in rows))}
         print(".", end="", flush=True)
     print()
     out["hit_daily"] = hits
@@ -293,7 +302,7 @@ def main():
         g = api(cfg, "glory", period=pid)
         if g.get("error"):
             continue
-        rk = sorted((int(x["score"]) for x in g["leaderboards"]["rank"]), reverse=True)
+        rk = sorted((num(x["score"]) for x in g["leaderboards"]["rank"]), reverse=True)
         pa = dt.date.fromisoformat(pid)
         pb = min(pa + dt.timedelta(days=6), dt.date.fromisoformat(B))
         wk = api(cfg, "summary", **{"from": pa.isoformat(), "to": pb.isoformat()})
@@ -306,10 +315,10 @@ def main():
             "claimed_rewards": g["authoritative"]["claimedRewards"],
             "settled_coins": g["authoritative"]["settledCoins"],
             "week_active": wk["gameplay"]["activePlayers"],
-            "rank_top1": rk[0] if rk else 0,
-            "rank_top10": rk[9] if len(rk) > 9 else (rk[-1] if rk else 0),
-            "rank_median": rk[len(rk) // 2] if rk else 0,
-            "rank_total": sum(rk)})
+            "rank_top1": round(rk[0]) if rk else 0,
+            "rank_top10": round(rk[9]) if len(rk) > 9 else (round(rk[-1]) if rk else 0),
+            "rank_median": round(rk[len(rk) // 2]) if rk else 0,
+            "rank_total": round(sum(rk))})
 
     print("· Redshift：跨游戏留存")
     d1c = (dt.date.fromisoformat(B) - dt.timedelta(days=1)).isoformat()

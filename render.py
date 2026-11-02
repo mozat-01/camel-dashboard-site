@@ -11,7 +11,7 @@ for line in open(os.path.join(HERE, "config.env"), encoding="utf-8"):
         k, v = line.split("=", 1); CFG[k.strip()] = v.strip()
 
 S, RC, W = D["summary"], D["recent"], D["window"]
-n = lambda x: f"{int(x):,}"
+n = lambda x: f"{int(float(x or 0)):,}"
 
 
 def pf(a, b, dp=1):
@@ -41,7 +41,7 @@ free_share = (grant - paid) / grant if grant else 0
 mxr = reasons[0][1] if reasons else 1
 rgp, rac, rex = RC["gameplay"], RC["activation"], RC["exchanges"]
 rnet = int(rgp["netCoins"])
-rrtp = int(rgp["awardedCoins"]) / int(rgp["wageredCoins"]) * 100 if int(rgp["wageredCoins"]) else 0
+rrtp = float(rgp["awardedCoins"]) / float(rgp["wageredCoins"]) * 100 if float(rgp["wageredCoins"]) else 0
 
 gp, ex = S["gameplay"], S["exchanges"]
 rev = {e["eventName"]: e for e in RC["funnel"]}
@@ -84,7 +84,7 @@ for d in daily:
     ap = _dact.get(day) or d["activePlayers"]
     sp = d["spins"]
     r = xd.get(day, {}); xp = int(r.get("ppl", 0)); xc = int(r.get("c", 0))
-    dr = int(d["awardedCoins"]) / int(d["wageredCoins"]) * 100 if int(d["wageredCoins"]) else 0
+    dr = float(d["awardedCoins"]) / float(d["wageredCoins"]) * 100 if float(d["wageredCoins"]) else 0
     rows.append(f'<tr><td class="mono">{day[5:]}</td><td class="num mono">{ap}</td>'
                 f'<td class="num mono">{D["new_players"].get(day,0)}</td><td class="num mono">{n(sp)}</td>'
                 f'<td>{bar(sp/MXS*100)}</td><td class="num mono">{sp//ap if ap else 0}</td>'
