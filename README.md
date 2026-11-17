@@ -55,7 +55,7 @@ Actions 一天跑 5 次（UTC 23:30 / 02:30 / 06:30 / 10:30 / 14:30），也可�
 后台是 REST 风格，会话即资源：
 
 ```
-POST /app/41011/v1/admin/session   {"password": "..."}
+POST /app/41013/v1/admin/session   {"password": "..."}
   → 204 + Set-Cookie: treasure_camel_admin=...（Max-Age=86400，24 小时）
 DELETE 同一路径 = 登出
 ```
@@ -132,7 +132,9 @@ DELETE 同一路径 = 登出
   （实测 09-29 当天读到活跃 23，次日读到 68）。所以 `WINDOW_END` 留空＝只取到昨天。
 - **兑换两个口径不一致**：Redshift 的笔数对应后台的「尝试」而非「成功」（Coins 在发起时就扣），
   逐日表的笔数会略高于 KPI 里的成功数。差额核查过，原因是结算延迟与历史 SKU，**不是资损**。
-- **后台域名别写错**：是 `server-game.letskix.com`，**不带 `-test`**。`-test` 是测试服，接口返回 401。
+- **后台地址**：`server-game.letskix.com` 的 **app 41013**（2026-11-17 起）。
+  旧的 `-test` 域名 + app 41011 同数据、仍可用，但不再是默认；`-test` **不是**测试服，
+  早年「`-test` 返回 401」的说法是会话问题看错了。登录路径的 app id 必须和 BASE 一致，否则 401。
 - `spins` 接口 `limit` 上限是 **100**，传更大直接 400。
 - `glory` 接口对不存在的赛期返回 `{"error":...}`，代码里已跳过。
 - 单日 `summary` 对未成熟的留存返回 `0/0`，渲染层显示「—」而不是 0%。

@@ -6,14 +6,18 @@
 import json, os, sys, time, urllib.request, urllib.error, datetime as dt
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-# 2026-10-22 起改用 -test 域名。
-# ⚠️ 别被名字骗了：`-test` 不是测试服，和 server-game.letskix.com 是**同一套后端**
-#    （09-12~10-21 窗口活跃 490 / spin 377,419，与旧域名数据接得上）。
-#    README/HANDOFF 里原先写的「-test 是测试服、接口返回 401」是错的，
-#    那次 401 是会话问题不是服务器问题。
-# ⚠️ Cookie 按域名隔离，换域名必须重新登录。
-HOST = os.environ.get("CAMEL_HOST") or "https://server-game-test.letskix.com"
-BASE = "/app/41011/v1/admin/analytics"
+# 2026-11-17 起改用 server-game.letskix.com 的 app 41013（Kite 给的新地址）。
+# ⚠️ 41013 与旧的 41011 是**同一个游戏、同一份数据**：同一个 7 天窗口
+#    （11-10~11-16）两边都返回 活跃 361 / spin 288,032 / wagered 28,354,860,000。
+#    换地址只是换入口，不改任何口径。
+# ⚠️ 换地址**不解决长窗口 503**：两个入口都是同一套后端的同一个慢查询，
+#    7 天 8~11 秒能过，30 天以上就 503（2026-11-17 实测两边各挂四次）。
+# ⚠️ 历史：10-22~11-16 曾用 -test 域名的 41011，它不是测试服，与正式域同数据。
+# ⚠️ Cookie 按域名隔离，换域名必须重新登录；app id 也要跟着换，
+#    登录路径里的 41013 和 BASE 必须一致，否则拿到的 Cookie 对不上会 401。
+HOST = os.environ.get("CAMEL_HOST") or "https://server-game.letskix.com"
+APP = os.environ.get("CAMEL_APP") or "41013"
+BASE = f"/app/{APP}/v1/admin/analytics"
 
 
 # 停机维护时后台整站返回 503（页面标题 "Treasure Camel · Game update"），
@@ -71,7 +75,7 @@ def login(password, username="admin"):
     """
     body = json.dumps({"username": username, "password": password}).encode()
     req = urllib.request.Request(
-        f"{HOST}/app/41011/v1/admin/session", data=body, method="POST",
+        f"{HOST}/app/{APP}/v1/admin/session", data=body, method="POST",
         headers={"Content-Type": "application/json",
                  "User-Agent": "camel-dashboard/1.0"})
     waits = list(MAINTENANCE_WAITS)
