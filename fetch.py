@@ -24,23 +24,56 @@ BASE = f"/app/{APP}/v1/admin/analytics"
 # 所有路径都挡，包括登录接口。游戏更新是常态，定时跑一定会撞上，所以统一退避重试。
 MAINTENANCE_WAITS = [30, 60, 120, 240, 480]   # 秒，累计约 15 分钟
 
+# 2026-11-18：后端把 analytics 查询改成了异步排队。冷查询不再直接 503，
+# 而是返回 202 + {"code": "analytics_pending"}；按 Retry-After 用**同一 URL 和
+# 同一筛选**继续 GET，直到 200。改日期重开等于重新排队，拿不到原来那份结果。
+# ❗urlopen 对 202 不抛异常，所以不显式处理就会把 45 字节的占位响应当成数据，
+#   下游取 j["gameplay"] 时才 KeyError —— 现象是「抓数崩了」而不是「后台挂了」。
+PENDING_BUDGET = int(os.environ.get("CAMEL_PENDING_BUDGET") or 600)   # 单份报告总等待预算（秒）
+
 
 def is_maintenance(code):
     return code in (502, 503, 504)
 
 
 def http_json(req, what, tries=3):
-    """发请求并解析 JSON；503 当作停机维护，按 MAINTENANCE_WAITS 退避重试。
+    """发请求并解析 JSON。
+
+    三种非正常情况：
+      202 analytics_pending —— 后台在排队生成，按 Retry-After 轮询同一 URL（2026-11-18 起）
+      502/503/504           —— 停机维护，按 MAINTENANCE_WAITS 退避重试
+      其它                   —— 有限次重试
 
     返回 (data, None) 或在彻底失败时 (None, 原因)。401 直接上抛由调用方处理。
     """
     waits = list(MAINTENANCE_WAITS)
     attempt = 0
+    waited = 0.0      # 排队累计等待
+    polls = 0
     while True:
         try:
             with urllib.request.urlopen(req, timeout=120) as r:
                 body = r.read()
-                return (json.loads(body.decode()) if body else {}), None
+                data = json.loads(body.decode()) if body else {}
+                pending = r.status == 202 or (
+                    isinstance(data, dict) and data.get("code") == "analytics_pending")
+                if pending:
+                    try:
+                        ra = max(1.0, float(r.headers.get("Retry-After")))
+                    except (TypeError, ValueError):
+                        ra = 2.0
+                    polls += 1
+                    if waited + ra > PENDING_BUDGET:
+                        return None, (f"后台排队生成超过 {PENDING_BUDGET}s 仍未出结果"
+                                      f"（已轮询 {polls} 次）")
+                    if polls == 1:
+                        print(f"  后台排队生成中（HTTP 202），按 Retry-After 轮询…（{what}）")
+                    time.sleep(ra)
+                    waited += ra
+                    continue
+                if polls:
+                    print(f"  排队完成，{waited:.0f}s / {polls} 次轮询后拿到结果（{what}）")
+                return data, None
         except urllib.error.HTTPError as e:
             if e.code == 401:
                 raise
