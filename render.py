@@ -46,7 +46,10 @@ rrtp = float(rgp["awardedCoins"]) / float(rgp["wageredCoins"]) * 100 if float(rg
 gp, ex = S["gameplay"], S["exchanges"]
 rev = {e["eventName"]: e for e in RC["funnel"]}
 RE = lambda k, f="players": rev[k][f] if k in rev else 0
-xr = (D.get("exchange_recent") or [{"ppl": 0}])[0]
+# 窗口内「去重兑换人数」：后端 combinedExchanges 与 exchanges.successful 同源（实测 players=49
+# 与 funnel 的 purchase_created 49 人完全一致）。Redshift 自己算会差约 1%，同一行不要混两个源。
+_cex = RC.get("combinedExchanges") or {}
+xr_ppl = int(_cex["players"]) if _cex.get("status") == "ready" and _cex.get("players") is not None else None
 xt = (D.get("exchange_total") or [{"ppl": 0}])[0]
 
 # ── 命中率（最近 HIT_DAYS 天）─────────────────────────────────────
@@ -137,17 +140,69 @@ for i, (lab, v) in enumerate(F):
     frows.append(f'<tr><td>{i+1:02d}　{lab}</td><td class="num mono">{v}</td>'
                  f'<td>{bar(v/den*100)}</td>'
                  f'<td class="num">{"分母" if i==0 else pf(v,F[i-1][1])}</td></tr>')
-frows.append('<tr class="sub2"><td colspan="4">▼ 兑换路径（事件口径＝窗口内全体玩家，与上段的 cohort 不是同一人群，不可逐环相除）</td></tr>')
-for i, k in enumerate(["insufficient_balance_shown", "coin_store_viewed", "coin_pack_clicked"]):
-    lab = {"insufficient_balance_shown": "Credits 不足（撞墙）", "coin_store_viewed": "进入商店",
-           "coin_pack_clicked": "点击 coin pack"}[k]
-    frows.append(f'<tr><td>{len(F)+i+1:02d}　{lab}</td>'
-                 f'<td class="num mono">{RE(k)} <span class="note">/ {n(RE(k,"events"))} 次</span></td>'
-                 f'<td>{bar(RE(k)/den*100,"var(--m2)")}</td><td class="num">—</td></tr>')
-frows.append(f'<tr class="hi"><td><b>{len(F)+4:02d}　完成兑换（coins→credits）</b></td>'
-             f'<td class="num mono"><b>{rex["successful"]} 笔</b> <span class="note">/ {xr["ppl"]} 人</span></td>'
-             f'<td>{bar(int(xr["ppl"])/den*100,"var(--m2)")}</td>'
+# 兑换路径＝花 Loops Coins 换 Play Credits；充值路径＝Loops Coins 本身不够，转去原生充值。
+# 两段都是事件口径（窗口内全体玩家），与上面的 activation cohort 不是同一人群。
+# 条内进度条按本段自身最大值取相对长度，不是对 cohort 的占比——入口不止一条，不能逐环相除。
+EXCHANGE_PATH = [("insufficient_balance_shown", "Credits 不足（撞墙）"),
+                 ("coin_store_viewed", "进入商店"),
+                 ("coin_pack_clicked", "点击 coin pack"),
+                 ("recovery_supply_buy_coins_clicked",
+                  "补给弹窗点「买币」<span class=\"note\">另一入口</span>"),
+                 ("purchase_created", "创建兑换订单"),
+                 ("purchase_result_shown", "结果页展示")]
+# purchase_* 属于兑换路径不是充值路径：它 327 次远多于原生充值全程的 136 次，
+# 且 49 人 / 327 笔与 recent.combinedExchanges、exchanges.successful 完全相等。
+TOPUP_PATH = [("native_topup_opened", "进入原生充值"),
+              ("native_topup_balance_insufficient", "└ Loops 余额仍不足，需先充值"),
+              ("native_topup_balance_sufficient", "└ Loops 余额够，直接兑换"),
+              ("native_topup_returned", "返回游戏"),
+              ("native_topup_failed", "充值失败")]
+
+
+def pmax(path):
+    return max((RE(k) for k, _ in path), default=0) or 1
+
+
+def path_rows(path, start, color="var(--m2)"):
+    """返回 (<tr> 串列表, 下一个序号)。进度条以本段最大值为基准。"""
+    mx = pmax(path)
+    out = []
+    for i, (k, lab) in enumerate(path):
+        out.append(f'<tr><td>{start+i+1:02d}　{lab}</td>'
+                   f'<td class="num mono">{RE(k)} <span class="note">/ {n(RE(k,"events"))} 次</span></td>'
+                   f'<td>{bar(RE(k)/mx*100,color)}</td><td class="num">—</td></tr>')
+    return out, start + len(path)
+
+
+no = len(F)
+frows.append('<tr class="sub2"><td colspan="4">▼ 兑换路径　coins → credits'
+             '<span class="note">（事件口径＝窗口内全体玩家，与上段 cohort 不是同一人群；'
+             '进度条按本段最大值取相对长度，不可逐环相除）</span></td></tr>')
+_rows, no = path_rows(EXCHANGE_PATH, no)
+frows += _rows
+no += 1
+frows.append(f'<tr class="hi"><td><b>{no:02d}　完成兑换（coins→credits）</b></td>'
+             f'<td class="num mono"><b>{rex["successful"]} 笔</b> '
+             f'<span class="note">/ {xr_ppl if xr_ppl is not None else "—"} 人</span></td>'
+             f'<td>{bar((xr_ppl or 0)/pmax(EXCHANGE_PATH)*100,"var(--m2)")}</td>'
              f'<td class="num mono">扣 {n(rex["loopsCoinsDeducted"])}</td></tr>')
+
+frows.append('<tr class="sub2"><td colspan="4">▼ 充值路径　Loops Coins 不够 → 原生充值'
+             '<span class="note">（兑换时 Loops Coins 不够才会跳到这里，是兑换路径的一条分支，'
+             '不是它的下游，不可逐环相除。'
+             '⚠️ 11-18 上线的「自动降 Bet」后台没有对应事件，这一步目前看不到）</span></td></tr>')
+_rows, no = path_rows(TOPUP_PATH, no)
+frows += _rows
+_mon = RC.get("monetization") or {}
+if _mon:
+    _ip = int(_mon.get("insufficientPlayers") or 0)
+    _pa = int(_mon.get("purchasersAfterInsufficient") or 0)
+    no += 1
+    frows.append(f'<tr class="hi"><td><b>{no:02d}　撞墙 → 下单转化</b> '
+                 f'<span class="note">后台 monetization 口径</span></td>'
+                 f'<td class="num mono"><b>{_pa} 人</b> <span class="note">/ 撞墙 {_ip} 人</span></td>'
+                 f'<td>{bar(_pa/_ip*100 if _ip else 0,"var(--m2)")}</td>'
+                 f'<td class="num mono"><b>{pf(_pa,_ip)}</b></td></tr>')
 
 # ── Credits 来源（最近 N 天）─────────────────────────────────────
 erows = []
@@ -452,7 +507,7 @@ HTML = f'''<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8"><meta name
 </div></div></section>
 
 <section><h2><span class="chap">Funnel</span>变现<span class="tag">最近 {W["funnel_days"]} 天 · {FW}</span></h2>
-<div class="card"><div class="ch"><div class="t">激活与兑换漏斗</div><span class="tag">{FW}</span></div><div class="cb">
+<div class="card"><div class="ch"><div class="t">激活 · 兑换 · 充值漏斗</div><span class="tag">{FW}</span></div><div class="cb">
 <table><thead><tr><th style="width:38%">环节</th><th class="num">人数</th><th style="width:150px"></th><th class="num">占上环</th></tr></thead>
 <tbody>{"".join(frows)}</tbody></table>
 </div></div>
